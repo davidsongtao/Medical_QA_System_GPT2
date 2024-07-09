@@ -10,17 +10,24 @@ from transformers import AutoTokenizer
 
 
 def preprocess(txt_path, pkl_path, tokenizer_model=ParametersConfig().tokenizer_model):
+
+    # 从本地加载tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_model, trust_remote_code=True)
+
+    # 读取txt文件
     conversation_list = []
     conversation_length = []
 
     with open(txt_path, 'r', encoding='utf-8') as f:
         train_data = f.read()
+
+        # 切分数据
         if "\r\n\r\n" in train_data:
             train_data = train_data.split("\r\n\r\n")
         else:
             train_data = train_data.split("\n\n")
 
+        # 对数据进行张量表示
         for conversation in tqdm(train_data):
             if "\r\n" in conversation:
                 conversation = conversation.split("\r\n")
