@@ -9,11 +9,11 @@ from data_preprocess.dataset import *
 def load_dataset(train_pkl, valid_pkl):
     with open(train_pkl, 'rb') as f:
         train_data = pickle.load(f)
-        train_dataset = MyDataset(train_data)
+        train_dataset = MyDataset(train_data, max_len=300)
 
     with open(valid_pkl, 'rb') as f:
         valid_data = pickle.load(f)
-        valid_dataset = MyDataset(valid_data)
+        valid_dataset = MyDataset(valid_data, max_len=300)
 
     return train_dataset, valid_dataset
 
