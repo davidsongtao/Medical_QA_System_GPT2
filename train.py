@@ -9,7 +9,7 @@ from transformers import BertTokenizerFast, GPT2LMHeadModel, GPT2Config
 from data_preprocess.dataloader import *
 
 
-def train_epoch(model, train_dataloader, optimizer, scheduler, param):
+def train_epoch(model, train_dataloader, optimizer, scheduler, param, epoch):
     """
     模型训练函数
     :param model: GPT2模型
@@ -20,6 +20,7 @@ def train_epoch(model, train_dataloader, optimizer, scheduler, param):
     """
     # 1. 设置模型进入训练模式
     model.train()
+    epoch_loss = 0
     # 2. train_dataloader中解析出input_ids和labels
     for batch_index, (input_ids, labels) in enumerate(train_dataloader):
         # 3. 数据拉入显存
@@ -30,6 +31,7 @@ def train_epoch(model, train_dataloader, optimizer, scheduler, param):
         # 5. 模型输出结果中解析出预测值，损失值
         logits = outputs.logits
         loss = outputs.loss.mean()
+        epoch_loss += loss
         ignore_index = param.ignore_index
         # 6. 通过模型输出预测值和损失值计算模型准确率
         batch_acc = calculate_acc(logits, labels, ignore_index)
@@ -49,6 +51,34 @@ def train_epoch(model, train_dataloader, optimizer, scheduler, param):
         # 10. 清空内存
         del input_ids, outputs
 
+    # 保存模型
+    # if epoch % 1 == 0 or epoch == param.epochs:
+    #     model_path = os.path.join(param.save_model_path, f"model_epoch{epoch + 1}")
+    #     if not os.path.exists(model_path):
+    #         os.mkdir(model_path)
+    #     model.save_pretrained(model_path)
+    #     print(f"模型第{epoch + 1}轮。保存成功！")
+
+
+def valid_epoch(model, valid_dataloader, param, epoch):
+    # 1. 指定模型进入验证模式
+    model.eval()
+    total_loss = 0
+    # 2. 从验证集解析数据，丢入模型
+    with torch.no_grad():
+        for batch_index, (input_ids, labels) in enumerate(valid_dataloader):
+            # 3. 数据拉入GPU
+            input_ids = input_ids.to(param.device)
+            labels = labels.to(param.device)
+            # 4. 拉入模型获取输出结果
+            outputs = model.forward(input_ids, labels=labels)
+            # 5. 结果解析出loss
+            loss = outputs.loss.mean()
+            total_loss += loss
+        # 6. 计算epoch的平均损失值
+        epoch_mean_loss = total_loss / len(valid_dataloader)
+        return epoch_mean_loss
+
 
 def train(model, train_dataloader, valid_dataloader, param):
     """
@@ -67,7 +97,18 @@ def train(model, train_dataloader, valid_dataloader, param):
                                                              num_training_steps=t_total)
     # 4. 开始模型训练
     for epoch in range(param.epochs):
-        train_epoch(model, train_dataloader, optimizer, scheduler, param)
+        epoch_best_loss = 10000
+        train_epoch(model, train_dataloader, optimizer, scheduler, param, epoch)
+        # 5. 模型在验证集上验证
+        epoch_mean_loss = valid_epoch(model, valid_dataloader, param, epoch)
+        if epoch_mean_loss < epoch_best_loss:
+            epoch_best_loss = epoch_mean_loss
+            # 保存模型
+            best_model_path = os.path.join(param.save_model_path, f"best_model_epoch_{epoch}")
+            if not os.path.exists(best_model_path):
+                os.mkdir(best_model_path)
+            model.save_pretrained(best_model_path)
+            print("最佳模型保存成功！")
 
 
 def main():
