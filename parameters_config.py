@@ -22,3 +22,4 @@ class ParametersConfig:
         self.warmup_steps = 1000
         self.ignore_index = -100
         self.lr = 2.6e-5
+        self.max_grad_norm = 2.0
