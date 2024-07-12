@@ -23,3 +23,4 @@ class ParametersConfig:
         self.ignore_index = -100
         self.lr = 2.6e-5
         self.max_grad_norm = 2.0
+        self.loss_step = 10  # 设置多少步打印一次损失值
