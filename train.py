@@ -2,11 +2,14 @@
 模型训练脚本
 """
 import os
+from datetime import datetime
+
 import transformers
 from function_tools import *
 from parameters_config import *
 from transformers import BertTokenizerFast, GPT2LMHeadModel, GPT2Config
 from data_preprocess.dataloader import *
+from data_preprocess.dataset import *
 
 
 def train_epoch(model, train_dataloader, optimizer, scheduler, param, epoch):
@@ -20,7 +23,7 @@ def train_epoch(model, train_dataloader, optimizer, scheduler, param, epoch):
     """
     # 1. 设置模型进入训练模式
     model.train()
-    epoch_loss = 0
+    epoch_total_loss = 0
     # 2. train_dataloader中解析出input_ids和labels
     for batch_index, (input_ids, labels) in enumerate(train_dataloader):
         # 3. 数据拉入显存
@@ -31,7 +34,8 @@ def train_epoch(model, train_dataloader, optimizer, scheduler, param, epoch):
         # 5. 模型输出结果中解析出预测值，损失值
         logits = outputs.logits
         loss = outputs.loss.mean()
-        epoch_loss += loss
+        # 计算这个轮次的总损失值
+        epoch_total_loss += loss
         ignore_index = param.ignore_index
         # 6. 通过模型输出预测值和损失值计算模型准确率
         batch_acc = calculate_acc(logits, labels, ignore_index)
@@ -46,37 +50,47 @@ def train_epoch(model, train_dataloader, optimizer, scheduler, param, epoch):
             optimizer.zero_grad()
         # 9. 打印日志
         if (batch_index + 1) % param.loss_step == 0:
+            loss_print = loss * param.gradient_accumulation_steps
+            loss_print = loss_print.item()
+            acc_print = round(batch_acc, 4)*100
+            with open(param.train_log_path, "a") as train_log:
+                print(
+                    f"当前Batch：{batch_index + 1}/{len(train_dataloader)} | 当前epoch:{epoch}/{param.epochs} | 当前损失值：{round(loss_print, 4)} | 当前准确率：{acc_print:.2f}%", file=train_log)
             print(
-                f"模型当前轮次：{batch_index + 1}. 模型当前损失值：{loss * param.gradient_accumulation_steps}. 模型当前准确率：{batch_acc}")
+                f"当前Batch：{batch_index + 1}/{len(train_dataloader)} | 当前epoch:{epoch}/{param.epochs} | 当前损失值：{round(loss_print, 4)} | 当前准确率：{acc_print:.2f}%")
         # 10. 清空内存
         del input_ids, outputs
-
-    # 保存模型
-    # if epoch % 1 == 0 or epoch == param.epochs:
-    #     model_path = os.path.join(param.save_model_path, f"model_epoch{epoch + 1}")
-    #     if not os.path.exists(model_path):
-    #         os.mkdir(model_path)
-    #     model.save_pretrained(model_path)
-    #     print(f"模型第{epoch + 1}轮。保存成功！")
+    # 计算这个epoch的平均损失值
+    epoch_mean_loss = epoch_total_loss / len(train_dataloader)
+    return epoch_mean_loss
 
 
 def valid_epoch(model, valid_dataloader, param, epoch):
+    """
+    用训练的模型在验证集上验证，计算损失值
+    :param model: 训练集上训练过的模型
+    :param valid_dataloader: 验证数据集
+    :param param: 超参
+    :param epoch: 当前轮次
+    :return: epoch_mean_loss:本轮次验证集平均损失
+    """
     # 1. 指定模型进入验证模式
     model.eval()
-    total_loss = 0
-    # 2. 从验证集解析数据，丢入模型
+    # 初始化epoch_total_loss
+    epoch_total_loss = 0
+    # 2. 解析数据集进行验证
     with torch.no_grad():
         for batch_index, (input_ids, labels) in enumerate(valid_dataloader):
             # 3. 数据拉入GPU
             input_ids = input_ids.to(param.device)
             labels = labels.to(param.device)
-            # 4. 拉入模型获取输出结果
+            # 4. 数据拉入模型前向传播
             outputs = model.forward(input_ids, labels=labels)
-            # 5. 结果解析出loss
+            # 5. 输出结果解析出损失值
             loss = outputs.loss.mean()
-            total_loss += loss
-        # 6. 计算epoch的平均损失值
-        epoch_mean_loss = total_loss / len(valid_dataloader)
+            epoch_total_loss += loss
+        # 6. 计算验证集这个epoch的平均loss
+        epoch_mean_loss = epoch_total_loss / len(valid_dataloader)
         return epoch_mean_loss
 
 
@@ -95,20 +109,42 @@ def train(model, train_dataloader, valid_dataloader, param):
     # 3. 构建学习率预热
     scheduler = transformers.get_linear_schedule_with_warmup(optimizer, num_warmup_steps=param.warmup_steps,
                                                              num_training_steps=t_total)
+    # 初始化两个空列表，记录训练集和验证集各轮次的平均损失值
+    train_losses, valid_losses = [], []
+    # 初始化一个最佳损失值，后续迭代更新
+    epoch_best_loss = 10000
     # 4. 开始模型训练
+    with open(param.train_log_path, "a") as train_log:
+        print(f"模型训练开始，起始时间：{datetime.now()}", file=train_log)
+    print(f"模型训练开始，起始时间：{datetime.now()}")
     for epoch in range(param.epochs):
-        epoch_best_loss = 10000
-        train_epoch(model, train_dataloader, optimizer, scheduler, param, epoch)
-        # 5. 模型在验证集上验证
-        epoch_mean_loss = valid_epoch(model, valid_dataloader, param, epoch)
-        if epoch_mean_loss < epoch_best_loss:
-            epoch_best_loss = epoch_mean_loss
-            # 保存模型
-            best_model_path = os.path.join(param.save_model_path, f"best_model_epoch_{epoch}")
+        # 5. 数据拉入训练集训练
+        train_mean_loss = train_epoch(model, train_dataloader, optimizer, scheduler, param, epoch)
+        train_losses.append(train_mean_loss)
+        # 6. 模型在验证集上验证
+        valid_mean_loss = valid_epoch(model, valid_dataloader, param, epoch)
+        valid_losses.append(valid_mean_loss)
+        # 7. 保存最佳模型
+        if valid_mean_loss < epoch_best_loss:
+            epoch_best_loss = valid_mean_loss
+            best_model_path = os.path.join(param.save_model_path, f"best_model_{epoch}")
             if not os.path.exists(best_model_path):
                 os.mkdir(best_model_path)
             model.save_pretrained(best_model_path)
+            with open(param.train_log_path, "a") as train_log:
+                print("最佳模型保存成功！", file=train_log)
             print("最佳模型保存成功！")
+
+    # 8. 训练结束，打印以下日志
+    with open(param.train_log_path, "a") as train_log:
+        print(f"所有训练结束。结束时间：{datetime.now()}", file=train_log)
+        print(f"训练集损失值：{train_losses}", file=train_log)
+        print(f"验证集损失值：{valid_losses}", file=train_log)
+        print(f"最佳损失值：{epoch_best_loss}", file=train_log)
+    print(f"所有训练结束。结束时间：{datetime.now()}")
+    print(f"训练集损失值：{train_losses}")
+    print(f"验证集损失值：{valid_losses}")
+    print(f"最佳损失值：{epoch_best_loss}")
 
 
 def main():
